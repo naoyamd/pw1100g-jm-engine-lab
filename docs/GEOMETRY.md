@@ -104,8 +104,17 @@ W_E   = U · |Vθ,out − Vθ,in|
 The sign of `Vθ` is reversed for turbine work so `eulerWork` is positive
 magnitude for both compressor and turbine rows. `rotorStagger` is derived
 from relative inlet/outlet flow angles and `statorStagger` from absolute
-angles. `workConsistency` exposes per-stage and total Euler/expected work
-residuals; the generated model keeps those residuals at floating-point zero.
+angles. The design-point angle means are applied directly to the generated
+illustrative airfoil, without a ±1.15 rad display clamp; high-loading
+compressor rows can therefore exceed that range. The local +theta direction
+follows blade motion: fan rotor and guide-vane stagger/camber are mirrored
+into world coordinates because the ring/fan turns opposite to LP. Rotor web/hub, stator
+platform, and core-row chord spans are allocated inside each fixed axial
+pitch so the generated mesh x/r envelopes remain separated. That is a
+conservative mesh-layout check, not a blade-clearance or aerodynamic
+certification. `workConsistency` exposes per-stage and total Euler/expected
+work residuals; the generated model keeps those residuals at floating-point
+zero.
 
 The shared nominal point is throttle `0.7`. `GEOMETRY_DESIGN_POINT` evaluates
 `createEngine(0.7)` once and copies its solved LP, HP, fan/ring speeds, station

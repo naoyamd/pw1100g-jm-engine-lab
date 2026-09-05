@@ -3,15 +3,21 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { createEngineGeometry } from './engine-geometry';
 import { createGearbox, deriveGearAngles } from './gear';
-import { advect, sampleFlow, transportGrid } from './flow';
+import { createFlowVisual, type FlowField } from './flow-visual';
+import {
+  INSPECTION_VIEWS,
+  isolatePartMaterials,
+  type InspectionView,
+} from './inspection';
 import { batchRepeatedMeshes } from './render-batches';
 import type { EngineState } from './physics';
 
 export type ViewOptions = {
-  view: 'engine' | 'gear';
+  view: InspectionView;
   cut: 'quarter' | 'half' | 'whole';
   transparent: boolean;
   flow: boolean;
+  flowField: FlowField;
   selected: string;
 };
 export type ViewState = EngineState;
@@ -91,6 +97,11 @@ export function createViewer(
   });
   const model = new THREE.Group();
   model.add(engine.group, gearbox.group);
+  const partMaterials = isolatePartMaterials(model);
+  const casingParts = new Set<string>();
+  engine.casing.traverse((o) => {
+    if (o.userData.partId) casingParts.add(o.userData.partId);
+  });
   scene.add(model);
 
   const backdrop = new THREE.Scene();
@@ -145,6 +156,13 @@ export function createViewer(
     }
   });
   batchRepeatedMeshes(model);
+  // Rotation about x preserves these axial bounds, including every blade instance.
+  const axialBounds = new Map<THREE.Mesh, THREE.Box3>();
+  model.updateMatrixWorld(true);
+  engine.group.traverse((o) => {
+    if (o instanceof THREE.Mesh)
+      axialBounds.set(o, new THREE.Box3().setFromObject(o));
+  });
   const backStencil = new THREE.MeshBasicMaterial({
     side: THREE.BackSide,
     depthWrite: false,
@@ -181,32 +199,15 @@ export function createViewer(
   const frontNormal = new THREE.Vector3(0, 0, 1);
 
   const overlay = new THREE.Scene();
-  const flowCount = 416;
-  const flowX = new Float64Array(flowCount);
-  const flowPositions = new Float32Array(flowCount * 3);
-  const flowColors = new Float32Array(flowCount * 3);
-  const flowGeometry = new THREE.BufferGeometry();
-  flowGeometry.setAttribute(
-    'position',
-    new THREE.BufferAttribute(flowPositions, 3),
-  );
-  flowGeometry.setAttribute('color', new THREE.BufferAttribute(flowColors, 3));
-  const flowMaterial = new THREE.PointsMaterial({
-    size: 0.018,
-    vertexColors: true,
-    transparent: true,
-    opacity: 0.9,
-    depthWrite: false,
-  });
-  const flow = new THREE.Points(flowGeometry, flowMaterial);
-  overlay.add(flow);
-  let flowInitialized = false;
+  const flow = createFlowVisual(engine.flowPath);
+  overlay.add(flow.group);
   let flowResidual = 0;
   let options: ViewOptions = {
     view: 'engine',
     cut: 'quarter',
-    transparent: false,
-    flow: false,
+    transparent: true,
+    flow: true,
+    flowField: 'temperature',
     selected: 'fan',
   };
   let disposed = false;
@@ -228,16 +229,30 @@ export function createViewer(
   function setCamera(preset: 'iso' | 'side' | 'front') {
     cameraPreset = preset;
     const gearView = options.view === 'gear';
-    const box = new THREE.Box3().setFromObject(
-      gearView ? gearbox.group : model,
-    );
+    const range = INSPECTION_VIEWS[options.view].xRange;
+    const box = range
+      ? new THREE.Box3(
+          new THREE.Vector3(range[0], -0.62, -0.62),
+          new THREE.Vector3(range[1], 0.62, 0.62),
+        )
+      : new THREE.Box3().setFromObject(gearView ? gearbox.group : model);
     const center = box.getCenter(new THREE.Vector3());
     const direction =
       preset === 'front'
         ? new THREE.Vector3(gearView ? 1 : -1, 0.001, 0.001)
         : preset === 'side'
           ? new THREE.Vector3(0, 0.04, 1)
-          : new THREE.Vector3(gearView ? 1.6 : -0.75, 0.43, 1);
+          : new THREE.Vector3(
+              gearView
+                ? 1.6
+                : options.view === 'combustor'
+                  ? -1.25
+                  : range
+                    ? -0.45
+                    : -0.75,
+              0.43,
+              1,
+            );
     direction.normalize();
     controls.target.copy(center);
     camera.position.copy(center).add(direction);
@@ -256,10 +271,14 @@ export function createViewer(
           distance = Math.max(
             distance,
             Math.abs(p.x) / (tanX * 0.86) + p.z,
-            Math.abs(p.y) / (tanY * 0.74) + p.z,
+            Math.abs(p.y) / (tanY * (range ? 0.9 : 0.74)) + p.z,
           );
         }
     camera.position.copy(center).addScaledVector(direction, distance);
+    if (range) {
+      camera.position.y += 0.12;
+      controls.target.y += 0.12;
+    }
     controls.update();
   }
   const dragStart = new THREE.Vector2();
@@ -281,6 +300,17 @@ export function createViewer(
     const hit = raycaster
       .intersectObject(options.view === 'gear' ? gearbox.group : model, true)
       .find((h) => {
+        for (
+          let parent: THREE.Object3D | null = h.object;
+          parent;
+          parent = parent.parent
+        )
+          if (!parent.visible) return false;
+        const range = INSPECTION_VIEWS[options.view].xRange;
+        if (range && (h.point.x < range[0] || h.point.x > range[1]))
+          return false;
+        if (options.transparent && casingParts.has(h.object.userData.partId))
+          return false;
         if (options.cut === 'half' && h.point.z > 0) return false;
         if (options.cut === 'quarter' && h.point.z > 0 && h.point.y > 0)
           return false;
@@ -294,8 +324,26 @@ export function createViewer(
   function setOptions(next: ViewOptions) {
     const viewChanged = next.view !== options.view;
     options = next;
-    engine.group.visible = next.view === 'engine';
+    const range = INSPECTION_VIEWS[next.view].xRange;
+    engine.group.visible = next.view !== 'gear';
+    gearbox.group.visible = next.view === 'engine' || next.view === 'gear';
     floor.visible = next.view === 'engine';
+    for (const [o, bounds] of axialBounds) {
+      o.visible =
+        !range || (bounds.max.x >= range[0] && bounds.min.x <= range[1]);
+      if (
+        range &&
+        (o.userData.partId === 'bypass-envelope' ||
+          o.userData.partId === 'fan-case')
+      )
+        o.visible = false;
+    }
+    renderer.clippingPlanes = range
+      ? [
+          new THREE.Plane(new THREE.Vector3(1, 0, 0), -range[0]),
+          new THREE.Plane(new THREE.Vector3(-1, 0, 0), range[1]),
+        ]
+      : [];
     const planes =
       next.cut === 'whole'
         ? []
@@ -305,6 +353,12 @@ export function createViewer(
     for (const m of originalMaterials.keys()) {
       m.clippingPlanes = planes;
       m.clipIntersection = next.cut === 'quarter';
+      if (m instanceof THREE.MeshStandardMaterial) {
+        m.emissive.setHex(
+          partMaterials.get(m) === next.selected ? 0x996029 : 0x000000,
+        );
+        m.emissiveIntensity = 0.22;
+      }
       m.needsUpdate = true;
     }
     engine.casing.traverse((o) => {
@@ -315,10 +369,10 @@ export function createViewer(
         m.depthWrite = !next.transparent;
       }
     });
-    flow.visible = next.flow && next.view === 'engine';
-    if (!flow.visible) flowInitialized = false;
-    flowMaterial.clippingPlanes = planes;
-    flowMaterial.clipIntersection = next.cut === 'quarter';
+    flow.group.visible = next.flow && next.view !== 'gear';
+    const bypassFlow = flow.group.getObjectByName('bypass-flow');
+    if (bypassFlow) bypassFlow.visible = !range;
+    flow.setClipping(planes, next.cut === 'quarter');
     if (viewChanged) setCamera('iso');
   }
 
@@ -328,50 +382,12 @@ export function createViewer(
     gearbox.setAngle(state.lpAngle);
     controls.update();
     model.updateMatrixWorld(true);
-    if (flow.visible) {
-      const coreGrid = transportGrid('core', state.cycle, engine.flowPath);
-      const bypassGrid = transportGrid('bypass', state.cycle, engine.flowPath);
-      flowResidual = Math.max(
-        ...[...coreGrid, ...bypassGrid].map((cell) => cell.continuityResidual),
-      );
-      const dt = Math.max(0, state.time - lastTime);
-      const reset = !flowInitialized || state.time < lastTime;
-      for (let i = 0; i < flowCount; i++) {
-        const core = i < 32;
-        const cells = core ? coreGrid : bypassGrid;
-        const first = cells[0].x0,
-          end = cells[cells.length - 1].x1;
-        const x = reset
-          ? first + ((i * 0.61803398875) % 1) * (end - first)
-          : advect(flowX[i], dt, cells);
-        flowX[i] = x;
-        const local = sampleFlow(
-          core ? 'core' : 'bypass',
-          x,
-          state.cycle,
-          engine.flowPath,
-        );
-        const phi = i * 2.3999632297;
-        const fraction = 0.15 + 0.7 * ((i * 0.41421356) % 1);
-        const radius = Math.sqrt(
-          local.hub ** 2 + (local.tip ** 2 - local.hub ** 2) * fraction,
-        );
-        flowPositions.set(
-          [x, Math.cos(phi) * radius, Math.sin(phi) * radius],
-          i * 3,
-        );
-        const color = new THREE.Color(core ? 0x9d7137 : 0x246f98);
-        if (core)
-          color.lerp(
-            new THREE.Color(0xc34128),
-            THREE.MathUtils.clamp((local.Tt - 600) / 1000, 0, 1),
-          );
-        flowColors.set([color.r, color.g, color.b], i * 3);
-      }
-      flowInitialized = true;
-      flowGeometry.attributes.position.needsUpdate = true;
-      flowGeometry.attributes.color.needsUpdate = true;
-    }
+    if (flow.group.visible)
+      flowResidual = flow.update(
+        state,
+        options.flowField,
+        INSPECTION_VIEWS[options.view].xRange,
+      ).continuityResidual;
     renderer.info.reset();
     renderer.clear(true, true, true);
     renderer.render(backdrop, camera);
@@ -427,7 +443,7 @@ export function createViewer(
       triangles: renderer.info.render.triangles,
       drawCalls: renderer.info.render.calls,
       starCount: gearbox.stars.length,
-      flowResidual: flow.visible ? flowResidual : undefined,
+      flowResidual: flow.group.visible ? flowResidual : undefined,
     };
   }
   setOptions(options);
@@ -446,7 +462,8 @@ export function createViewer(
       renderer.domElement.removeEventListener('pointerup', up);
       const geometries = new Set<THREE.BufferGeometry>();
       const materials = new Set<THREE.Material>();
-      for (const s of [scene, backdrop, overlay, capScene])
+      flow.dispose();
+      for (const s of [scene, backdrop, capScene])
         s.traverse((o) => {
           if (
             o instanceof THREE.Mesh ||

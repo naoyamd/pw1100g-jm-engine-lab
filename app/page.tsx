@@ -25,15 +25,21 @@ import {
   type EngineState,
 } from '@/lib/physics';
 import type { createViewer, ViewOptions } from '@/lib/viewer';
-import type { PartInfo } from '@/lib/engine-geometry';
+import type { PartInfo, StageInfo } from '@/lib/engine-geometry';
+import { INSPECTION_VIEWS } from '@/lib/inspection';
+import { FLOW_FIELDS, type FlowField } from '@/lib/flow-visual';
+import { EngineeringPanel } from './engineering-panel';
+import { FlowProfile } from './flow-profile';
+import benchmark from '@/data/benchmark.json';
 
 type Viewer = ReturnType<typeof createViewer>;
 type Rendered = ReturnType<Viewer['renderedDiagnostics']>;
 const INITIAL_OPTIONS: ViewOptions = {
   view: 'engine',
   cut: 'quarter',
-  transparent: false,
-  flow: false,
+  transparent: true,
+  flow: true,
+  flowField: 'temperature',
   selected: 'fan',
 };
 const rpm = (omega: number) => (Math.abs(omega) * 60) / (2 * Math.PI);
@@ -116,12 +122,15 @@ export default function Home() {
   const controls = useRef({ running: true, rate: 1 / 60, throttle: 0.7 });
   const [options, setOptions] = useState<ViewOptions>(INITIAL_OPTIONS);
   const [running, setRunning] = useState(true);
-  const [rate, setRate] = useState(1 / 60);
+  const [rate, setRate] = useState(1 / 600);
   const [throttle, setThrottle] = useState(0.7);
   const [snapshot, setSnapshot] = useState<EngineState | null>(null);
   const [rendered, setRendered] = useState<Rendered | null>(null);
   const [parts, setParts] = useState<PartInfo[]>([]);
-  const [tab, setTab] = useState<'structure' | 'cycle' | 'checks'>('structure');
+  const [stages, setStages] = useState<StageInfo[]>([]);
+  const [tab, setTab] = useState<
+    'structure' | 'engineering' | 'cycle' | 'checks'
+  >('structure');
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [error, setError] = useState('');
   const [fps, setFps] = useState(0);
@@ -142,6 +151,7 @@ export default function Home() {
         );
         viewer.current = localViewer;
         setParts([...localViewer.engine.parts, ...GEAR_PARTS]);
+        setStages(localViewer.engine.stages);
         engine.current = createEngine(controls.current.throttle);
         localViewer.setOptions(INITIAL_OPTIONS);
         localViewer.update(engine.current);
@@ -202,12 +212,14 @@ export default function Home() {
   }, [sourcesOpen]);
   const patchOptions = (patch: Partial<ViewOptions>) =>
     setOptions((current) => ({ ...current, ...patch }));
-  const changeView = (view: ViewOptions['view']) =>
+  const changeView = (view: ViewOptions['view']) => {
     patchOptions({
       view,
       cut: view === 'gear' ? 'whole' : 'quarter',
-      selected: view === 'gear' ? 'gear' : 'fan',
+      selected: INSPECTION_VIEWS[view].selected,
     });
+    setTab(view === 'engine' || view === 'gear' ? 'structure' : 'engineering');
+  };
   const step = () => {
     setRunning(false);
     controls.current.running = false;
@@ -247,6 +259,7 @@ export default function Home() {
       )
     : undefined;
   const steady = !!c && c.normalizedPowerResidual < 0.001;
+  const currentView = INSPECTION_VIEWS[options.view];
 
   return (
     <main className="lab">
@@ -275,18 +288,18 @@ export default function Home() {
         <div className="stage-area">
           <div className="view-toolbar">
             <div className="segmented" aria-label="表示対象">
-              <button
-                aria-pressed={options.view === 'engine'}
-                onClick={() => changeView('engine')}
-              >
-                <Box size={15} /> エンジン全体
-              </button>
-              <button
-                aria-pressed={options.view === 'gear'}
-                onClick={() => changeView('gear')}
-              >
-                <Settings2 size={15} /> 減速機
-              </button>
+              {(Object.keys(INSPECTION_VIEWS) as ViewOptions['view'][]).map(
+                (view) => (
+                  <button
+                    key={view}
+                    aria-pressed={options.view === view}
+                    onClick={() => changeView(view)}
+                  >
+                    {view === 'engine' && <Box size={15} />}
+                    {INSPECTION_VIEWS[view].label}
+                  </button>
+                ),
+              )}
             </div>
             <div className="display-controls">
               <label className="cut-control">
@@ -320,25 +333,35 @@ export default function Home() {
               >
                 <Wind size={15} /> 流れ
               </button>
+              {options.flow && options.view !== 'gear' && (
+                <select
+                  aria-label="流れの表示量"
+                  className="flow-field-select"
+                  value={options.flowField}
+                  onChange={(e) =>
+                    patchOptions({ flowField: e.target.value as FlowField })
+                  }
+                >
+                  {(Object.keys(FLOW_FIELDS) as FlowField[]).map((field) => (
+                    <option key={field} value={field}>
+                      {FLOW_FIELDS[field].label}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
           </div>
           <div className="viewport" ref={mount}>
             <div className="scene-caption">
-              <span className="eyebrow">
-                {options.view === 'engine'
-                  ? 'GEARED TURBOFAN'
-                  : 'FAN DRIVE GEAR SYSTEM'}
-              </span>
-              <h1>
-                {options.view === 'engine'
-                  ? 'エンジン構造・作動モデル'
-                  : 'ファン駆動減速機'}
-              </h1>
-              <p>
-                {options.view === 'engine'
-                  ? '2スプール / 3:1 減速 / 同軸シャフト'
-                  : '固定キャリア / ダブルヘリカル / 内歯リング出力'}
-              </p>
+              <span className="eyebrow">{currentView.eyebrow}</span>
+              <h1>{currentView.title}</h1>
+              <p>{currentView.summary}</p>
+              {currentView.xRange && (
+                <p className="inspection-range">
+                  観察範囲 x = {currentView.xRange[0].toFixed(2)}–
+                  {currentView.xRange[1].toFixed(2)} m · 同じエンジンを拡大
+                </p>
+              )}
             </div>
             <div className="camera-controls" aria-label="カメラ方向">
               {(['iso', 'side', 'front'] as const).map((preset, i) => (
@@ -374,6 +397,14 @@ export default function Home() {
               </span>
             </div>
           </div>
+          {options.flow && options.view !== 'gear' && snapshot && (
+            <FlowProfile
+              state={snapshot}
+              field={options.flowField}
+              view={options.view}
+              onView={changeView}
+            />
+          )}
           <div className="telemetry" aria-label="回転とサイクル計器">
             <Metric
               label="FAN / RING"
@@ -430,6 +461,8 @@ export default function Home() {
                 value={rate}
                 onChange={(e) => setRate(Number(e.target.value))}
               >
+                <option value={1 / 1200}>1/1200×</option>
+                <option value={1 / 600}>1/600×</option>
                 <option value={1 / 120}>1/120×</option>
                 <option value={1 / 60}>1/60×</option>
                 <option value={1 / 20}>1/20×</option>
@@ -453,17 +486,28 @@ export default function Home() {
             </span>
           </div>
           <nav className="inspector-tabs" aria-label="解析パネル">
-            {(['structure', 'cycle', 'checks'] as const).map((t, i) => (
-              <button
-                key={t}
-                aria-pressed={tab === t}
-                onClick={() => setTab(t)}
-              >
-                {['構造', 'サイクル', '検証'][i]}
-              </button>
-            ))}
+            {(['structure', 'engineering', 'cycle', 'checks'] as const).map(
+              (t, i) => (
+                <button
+                  key={t}
+                  aria-pressed={tab === t}
+                  onClick={() => setTab(t)}
+                >
+                  {['構造', '作動', 'サイクル', '検証'][i]}
+                </button>
+              ),
+            )}
           </nav>
           <div className="inspector-content">
+            {tab === 'engineering' && snapshot && (
+              <EngineeringPanel
+                state={snapshot}
+                view={options.view}
+                stages={stages}
+                selected={options.selected}
+                onSelect={(selected) => patchOptions({ selected })}
+              />
+            )}
             {tab === 'structure' && (
               <>
                 <label className="field-label" htmlFor="part-select">
@@ -712,9 +756,62 @@ export default function Home() {
         </aside>
       </section>
       <footer className="page-footer">
-        <span>
-          工学モデリング・ベンチマーク <b>·</b> GPT-6 Astra + Luna
-        </span>
+        <div className="benchmark-record">
+          <span>
+            工学モデリング・ベンチマーク <b>·</b> GPT-6 Astra + Luna
+          </span>
+          <details>
+            <summary>
+              実施 {benchmark.executionDate} · 総トークン{' '}
+              {num(benchmark.tokens.total_tokens / 1e6, 2)}M（キャッシュ込み）
+            </summary>
+            <p>
+              集計時点：
+              {new Date(benchmark.snapshotAt).toLocaleString('ja-JP', {
+                timeZone: 'Asia/Tokyo',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false,
+              })}{' '}
+              JST。初期制作から改良まで、このタスクと調査・実装サブエージェントのローカル利用記録を合算した観測値です。
+            </p>
+            <dl>
+              <Row
+                label="総トークン（入力＋出力）"
+                value={num(benchmark.tokens.total_tokens)}
+              />
+              <Row label="入力" value={num(benchmark.tokens.input_tokens)} />
+              <Row
+                label="入力のうちキャッシュ"
+                value={num(benchmark.tokens.cached_input_tokens)}
+              />
+              <Row
+                label="出力（推論を含む）"
+                value={num(benchmark.tokens.output_tokens)}
+              />
+              {benchmark.models.map((m) => (
+                <Row
+                  key={m.model}
+                  label={m.model}
+                  value={num(m.tokens.total_tokens)}
+                />
+              ))}
+            </dl>
+            <p>
+              同じ文脈を再読込した分も含みます。承認の自動レビューと集計後の作業は含めません。課金額や使用率への換算値ではありません。
+            </p>
+            <a
+              href={`${REPO}/blob/main/docs/BENCHMARK.md`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              集計方法と記録 <ArrowUpRight size={12} />
+            </a>
+          </details>
+        </div>
         <a href={REPO} target="_blank" rel="noreferrer">
           SOURCE & VERIFICATION <ArrowUpRight size={12} />
         </a>

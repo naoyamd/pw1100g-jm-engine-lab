@@ -1,0 +1,42 @@
+{
+  "executionDate": "2026-09-05",
+  "timezone": "Asia/Tokyo",
+  "snapshotAt": "2026-09-05T12:15:48.218Z",
+  "firstRecordAt": "2026-09-05T08:00:33.516Z",
+  "lastRecordAt": "2026-09-05T12:15:47.498Z",
+  "scope": "This task and its implementation/research subagents; automatic approval review excluded.",
+  "method": "Sum of usage from unique response_id in local token_usage_record entries. Cached input and reasoning output are subsets, never added twice. Snapshot excludes subsequent work.",
+  "tokens": {
+    "input_tokens": 138564852,
+    "cached_input_tokens": 133035008,
+    "output_tokens": 1083810,
+    "reasoning_output_tokens": 471735,
+    "total_tokens": 139648662
+  },
+  "models": [
+    {
+      "model": "gpt-6-astra",
+      "sessions": 1,
+      "responses": 358,
+      "tokens": {
+        "input_tokens": 35694239,
+        "cached_input_tokens": 33693440,
+        "output_tokens": 246929,
+        "reasoning_output_tokens": 72665,
+        "total_tokens": 35941168
+      }
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "sessions": 6,
+      "responses": 1131,
+      "tokens": {
+        "input_tokens": 102870613,
+        "cached_input_tokens": 99341568,
+        "output_tokens": 836881,
+        "reasoning_output_tokens": 399070,
+        "total_tokens": 103707494
+      }
+    }
+  ]
+}

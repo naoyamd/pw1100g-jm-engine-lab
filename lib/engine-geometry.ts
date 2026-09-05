@@ -102,6 +102,13 @@ const SOURCES = Object.freeze({
   easa: 'https://www.easa.europa.eu/en/document-library/type-certificates/engine-cs-e/easaime093-pw1100g-jm-series-engines',
 });
 
+// Keep the illustrative row envelopes separate inside the fixed axial stage
+// pitch.  These are display-model structural spans, independent of the
+// shared cycle and its stage work calibration.
+const ROTOR_WEB_HALF_AXIAL_SPAN = 0.018;
+const ROTOR_HUB_HALF_AXIAL_SPAN = 0.018;
+const STATOR_PLATFORM_HALF_AXIAL_SPAN = 0.01;
+
 export type StageFamily = 'fan' | 'lpc' | 'hpc' | 'hpt' | 'lpt';
 export type FlowStream = 'core' | 'bypass';
 
@@ -1025,10 +1032,6 @@ function addTagged<T extends THREE.Object3D>(
   return object;
 }
 
-function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.min(maximum, Math.max(minimum, value));
-}
-
 function stageDescription(family: StageFamily, index: number): string {
   if (family === 'fan')
     return '減速機を介して駆動されるファンの回転翼。掃引を付けた概略翼形。';
@@ -1093,12 +1096,11 @@ function makeStageInfo(spec: StageSpec): StageInfo {
       expectedWork,
       workResidual: eulerWork - expectedWork,
       pitch: (Math.PI * 2 * radius) / spec.bladeCount,
-      rotorStagger: clamp(
-        (relativeInletAngle + relativeOutletAngle) * 0.5,
-        -1.15,
-        1.15,
-      ),
-      statorStagger: clamp((inletAngle + outletAngle) * 0.5, -1.15, 1.15),
+      // The displayed airfoil uses the actual design-point angle average.
+      // Keep this relationship direct; a bounded fallback would make the
+      // triangle and generated metal angle disagree at high loading.
+      rotorStagger: (relativeInletAngle + relativeOutletAngle) * 0.5,
+      statorStagger: (inletAngle + outletAngle) * 0.5,
     } satisfies VelocityTriangle;
   });
   const eulerWork =
@@ -1180,15 +1182,17 @@ function addRotorStage(
   stageGroup.userData.eulerWork = stage.eulerWork;
 
   const mid = stage.velocityTriangles[1];
+  // Triangles use +theta along the blade motion; the fan turns opposite LP.
+  const rotationSign = spec.family === 'fan' ? -1 : 1;
   const bladeGeometry = createAirfoilGeometry({
     x: spec.x,
     hubRadius: spec.hubRadius,
     tipRadius: spec.tipRadius,
     chordRoot: spec.chordRoot,
     chordTip: spec.chordTip,
-    staggerRoot: stage.velocityTriangles[0].rotorStagger,
-    staggerTip: stage.velocityTriangles[2].rotorStagger,
-    camber: spec.camber,
+    staggerRoot: rotationSign * stage.velocityTriangles[0].rotorStagger,
+    staggerTip: rotationSign * stage.velocityTriangles[2].rotorStagger,
+    camber: rotationSign * spec.camber,
     thickness: spec.thickness,
     sweepRoot: -spec.chordRoot * 0.1,
     sweepTip: spec.chordTip * 0.13,
@@ -1204,7 +1208,12 @@ function addRotorStage(
   }
 
   const webGeometry = createRingGeometry(
-    [spec.x - 0.045, spec.x - 0.02, spec.x + 0.02, spec.x + 0.045],
+    [
+      spec.x - ROTOR_WEB_HALF_AXIAL_SPAN,
+      spec.x - ROTOR_WEB_HALF_AXIAL_SPAN * 0.45,
+      spec.x + ROTOR_WEB_HALF_AXIAL_SPAN * 0.45,
+      spec.x + ROTOR_WEB_HALF_AXIAL_SPAN,
+    ],
     [
       Math.max(0.012, shaftRadius - (spec.family === 'hpt' ? 0.015 : 0.007)),
       Math.max(0.012, shaftRadius - (spec.family === 'hpt' ? 0.015 : 0.007)),
@@ -1232,7 +1241,10 @@ function addRotorStage(
   const hubGeometry =
     spec.family === 'hpc' || spec.family === 'hpt'
       ? createRingGeometry(
-          [spec.x - 0.04, spec.x + 0.04],
+          [
+            spec.x - ROTOR_HUB_HALF_AXIAL_SPAN,
+            spec.x + ROTOR_HUB_HALF_AXIAL_SPAN,
+          ],
           [shaftRadius, shaftRadius],
           [spec.hubRadius, spec.hubRadius],
           48,
@@ -1240,7 +1252,12 @@ function addRotorStage(
       : undefined;
   const hub = hubGeometry
     ? new THREE.Mesh(hubGeometry, material)
-    : createSolidCylinderX(spec.x - 0.04, spec.x + 0.04, spec.hubRadius, 48);
+    : createSolidCylinderX(
+        spec.x - ROTOR_HUB_HALF_AXIAL_SPAN,
+        spec.x + ROTOR_HUB_HALF_AXIAL_SPAN,
+        spec.hubRadius,
+        48,
+      );
   hub.material = material;
   hub.userData.component = 'rotor-hub';
   if (hubGeometry) hub.userData.boreRadius = shaftRadius;
@@ -1278,7 +1295,8 @@ function addStatorRow(
   const triangles = stage.velocityTriangles;
   const count = Math.max(16, Math.round(stage.bladeCount * 0.74));
   const fanRow = stage.family === 'fan';
-  const platformHalfAxialSpan = 0.028;
+  const rotationSign = fanRow ? -1 : 1;
+  const platformHalfAxialSpan = STATOR_PLATFORM_HALF_AXIAL_SPAN;
   const coreWallAtPlatformEdge = fanRow
     ? 1.05
     : Math.min(
@@ -1290,11 +1308,11 @@ function addStatorRow(
     x,
     hubRadius: stage.hubRadius,
     tipRadius: tip,
-    chordRoot: fanRow ? 0.13 : 0.075,
-    chordTip: fanRow ? 0.09 : 0.055,
-    staggerRoot: triangles[0].statorStagger,
-    staggerTip: triangles[2].statorStagger,
-    camber: fanRow ? 0.045 : 0.035,
+    chordRoot: fanRow ? 0.07 : 0.03,
+    chordTip: fanRow ? 0.05 : 0.022,
+    staggerRoot: rotationSign * triangles[0].statorStagger,
+    staggerTip: rotationSign * triangles[2].statorStagger,
+    camber: rotationSign * (fanRow ? 0.045 : 0.035),
     thickness: fanRow ? 0.13 : 0.11,
     sweepRoot: -0.008,
     sweepTip: 0.012,
@@ -1427,14 +1445,14 @@ function createStageSpecs(): StageSpec[] {
       inletTangentialFactor: 0,
       camber: 0.075,
       thickness: 0.12,
-      chordRoot: 0.17,
-      chordTip: 0.22,
+      chordRoot: 0.08,
+      chordTip: 0.11,
     },
   ];
   const lpc = [
-    [0.94, 0.25, flowTipForArea(0.25, 0.29), 30, 0.18],
-    [1.055, 0.26, flowTipForArea(0.26, 0.27), 32, 0.16],
-    [1.18, 0.27, flowTipForArea(0.27, FLOW_PATH_AREAS.lpcExit), 34, 0.15],
+    [0.94, 0.25, flowTipForArea(0.25, 0.29), 30, 0.07],
+    [1.055, 0.26, flowTipForArea(0.26, 0.27), 32, 0.063],
+    [1.18, 0.27, flowTipForArea(0.27, FLOW_PATH_AREAS.lpcExit), 34, 0.058],
   ] as const;
   for (let index = 0; index < lpc.length; index += 1) {
     const [x, hubRadius, tipRadius, bladeCount, chord] = lpc[index];
@@ -1501,8 +1519,8 @@ function createStageSpecs(): StageSpec[] {
       inletTangentialFactor: 0.18 + index * 0.015,
       camber: 0.034,
       thickness: 0.105,
-      chordRoot: 0.082 - index * 0.002,
-      chordTip: 0.061 - index * 0.0015,
+      chordRoot: 0.041 - index * 0.001,
+      chordTip: 0.031 - index * 0.00075,
     });
   }
   const hpt = [
@@ -1532,8 +1550,8 @@ function createStageSpecs(): StageSpec[] {
       inletTangentialFactor: 0.9 - index * 0.04,
       camber: 0.055,
       thickness: 0.125,
-      chordRoot: 0.095,
-      chordTip: 0.13,
+      chordRoot: 0.034,
+      chordTip: 0.045,
     });
   }
   const lpt = [
@@ -1564,8 +1582,8 @@ function createStageSpecs(): StageSpec[] {
       inletTangentialFactor: 0.87 - index * 0.035,
       camber: 0.06,
       thickness: 0.12,
-      chordRoot: 0.095 - index * 0.005,
-      chordTip: 0.15 - index * 0.008,
+      chordRoot: 0.029 - index * 0.0015,
+      chordTip: 0.045 - index * 0.002,
     });
   }
   return specs;
@@ -2026,9 +2044,13 @@ export function createEngineGeometry(): EngineGeometryResult {
   for (const stage of stages) {
     if (stage.family === 'fan') continue;
     const statorX =
-      stage.family === 'hpt' || stage.family === 'lpt'
+      stage.family === 'hpt'
         ? stage.x - 0.05
-        : stage.x + 0.05;
+        : stage.family === 'lpt'
+          ? stage.x - 0.08
+          : stage.family === 'hpc'
+            ? stage.x + 0.0375
+            : stage.x + 0.0575;
     addStatorRow(stationary, stage, statorX, palette, parts, selectables);
   }
 
