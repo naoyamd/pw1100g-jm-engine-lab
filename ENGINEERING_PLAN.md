@@ -21,7 +21,7 @@ configured Luna max role. No proprietary fidelity is implied by numerical closur
       station/shaft diagnostics driven by the same simulation state.
 - [x] M6: Independent numerical, geometry, rendered-transform and browser QA,
       published reproducible verification report including measured performance.
-- [ ] M7: Public GitHub repository, automated checks and GitHub Pages deployment,
+- [x] M7: Public GitHub repository, automated checks and GitHub Pages deployment,
       exact published commit inspected and live site verified.
 
 ## Model conventions / shared implementation contract
